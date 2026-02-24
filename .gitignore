@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# Processed data (runtime files)
+processed.json
+
+# Input data files (may contain sensitive data)
+*.xlsx
+*.xls
+list.csv
+receipts_data.csv
+vat10_fp.txt
+
+# Large documentation files
+*.pdf
+
+# Receipt examples
+receipt_*.html
+receipt_*.pdf
+
+# Temp files
+$null
+*.tmp
+*.bak
