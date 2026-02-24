@@ -191,13 +191,64 @@ def date_to_unix(date_str):
     
     ВАЖНО: Касса имеет лимит на возраст корректируемого чека (около 30 дней).
     Если оригинальный чек старше лимита, используем вчерашнюю дату.
+    
+    ВАЖНО: Тег 1178 требует время 00:00:00 (по требованию PosCenter).
     """
     if not date_str:
         return None
     try:
         # Формат: 2026-01-01 00:06:00
         dt = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
-        original_timestamp = int(dt.timestamp())
+        
+        # Время всегда 00:00:00 (требование PosCenter для тега 1178)
+        dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        # Проверяем возраст чека (лимит 30 дней)
+        now = datetime.now()
+        days_diff = (now - dt).days
+        
+        if days_diff > 30:
+            # Используем вчерашнюю дату с временем 00:00:00
+            yesterday = now - timedelta(days=1)
+            yesterday = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
+            log(f"   Чек старше 30 дней ({days_diff} дней), используем вчерашнюю дату: {yesterday}")
+            return int(yesterday.timestamp())
+        
+        return int(dt.timestamp())
+    except:
+        return None
+
+
+def date_to_datetime_format(date_str):
+    """Конвертация строки даты в формат для тега 1178: ДД.ММ.ГГГГ
+    
+    Формат по требованию PosCenter: ДД.ММ.ГГГГ (TagType = 6, TagValueDateTime)
+    """
+    if not date_str:
+        return None
+    try:
+        # Формат: 2026-01-01 00:06:00
+        dt = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
+        
+        # Формат: ДД.ММ.ГГГГ
+        return dt.strftime('%d.%m.%Y')
+    except:
+        return None
+
+
+def date_to_correction_format(date_str):
+    """Конвертация строки даты в формат для тега 1178: ДД.ММ.ГГ 00:00:00
+    
+    ВАЖНО: Касса имеет лимит на возраст корректируемого чека (около 30 дней).
+    Если оригинальный чек старше лимита, используем вчерашнюю дату.
+    
+    Формат по требованию PosCenter: ДД.ММ.ГГ 00:00:00
+    """
+    if not date_str:
+        return None
+    try:
+        # Формат: 2026-01-01 00:06:00
+        dt = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
         
         # Проверяем возраст чека (лимит 30 дней)
         now = datetime.now()
@@ -206,11 +257,11 @@ def date_to_unix(date_str):
         if days_diff > 30:
             # Используем вчерашнюю дату
             yesterday = now - timedelta(days=1)
-            yesterday = yesterday.replace(hour=12, minute=0, second=0, microsecond=0)
-            log(f"   Чек старше 30 дней ({days_diff} дней), используем вчерашнюю дату: {yesterday}")
-            return int(yesterday.timestamp())
+            log(f"   Чек старше 30 дней ({days_diff} дней), используем вчерашнюю дату: {yesterday.strftime('%d.%m.%y')}")
+            dt = yesterday
         
-        return original_timestamp
+        # Формат: ДД.ММ.ГГ 00:00:00
+        return dt.strftime('%d.%m.%y 00:00:00')
     except:
         return None
 
@@ -398,16 +449,16 @@ def correction_refund(kkt, summ, payment_type, fiscal_sign, items, receipt_date=
         
         log("   Чек открыт!")
         
-        # 4. Отправка тега 1178 "Дата документа-основания" напрямую через FNSendTag
+        # 4. Отправка тега 1178 "Дата документа-основания" (TagType=6, формат ДД.ММ.ГГГГ)
         if receipt_date:
-            date_str = date_to_driver_format(receipt_date)
-            if date_str:
+            date_formatted = date_to_datetime_format(receipt_date)
+            if date_formatted:
                 log(f"\n4. Отправка тега 1178 (Дата документа-основания)...")
-                log(f"   Дата: {date_str}")
+                log(f"   Дата: {date_formatted}")
                 
                 kkt.TagNumber = 1178
-                kkt.TagType = 1  # string
-                kkt.TagValueStr = date_str
+                kkt.TagType = 6  # datetime
+                kkt.TagValueDateTime = date_formatted
                 result = kkt.FNSendTag()
                 log(f"   FNSendTag(1178): result={result}")
                 
@@ -562,16 +613,16 @@ def correction_sale(kkt, summ, payment_type, items, vat_rate, fiscal_sign=None, 
         
         log("   Чек открыт!")
         
-        # 4. Отправка тега 1178 "Дата документа-основания" напрямую через FNSendTag
+        # 4. Отправка тега 1178 "Дата документа-основания" (TagType=6, формат ДД.ММ.ГГГГ)
         if receipt_date:
-            date_str = date_to_driver_format(receipt_date)
-            if date_str:
+            date_formatted = date_to_datetime_format(receipt_date)
+            if date_formatted:
                 log(f"\n4. Отправка тега 1178 (Дата документа-основания)...")
-                log(f"   Дата: {date_str}")
+                log(f"   Дата: {date_formatted}")
                 
                 kkt.TagNumber = 1178
-                kkt.TagType = 1  # string
-                kkt.TagValueStr = date_str
+                kkt.TagType = 6  # datetime
+                kkt.TagValueDateTime = date_formatted
                 result = kkt.FNSendTag()
                 log(f"   FNSendTag(1178): result={result}")
                 
