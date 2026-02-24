@@ -43,12 +43,17 @@ processed.json
 # Input data files (may contain sensitive data)
 *.xlsx
 *.xls
+*.csv
 list.csv
 receipts_data.csv
 vat10_fp.txt
 
-# Large documentation files
+# Documentation files
 *.pdf
+*.docx
+*.doc
+*.txt
+!README.md
 
 # Receipt examples
 receipt_*.html
