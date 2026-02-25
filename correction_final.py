@@ -189,9 +189,6 @@ def disconnect_kkt(kkt):
 def date_to_unix(date_str):
     """Конвертация строки даты в Unix timestamp
     
-    ВАЖНО: Касса имеет лимит на возраст корректируемого чека (около 30 дней).
-    Если оригинальный чек старше лимита, используем вчерашнюю дату.
-    
     ВАЖНО: Тег 1178 требует время 00:00:00 (по требованию PosCenter).
     """
     if not date_str:
@@ -202,17 +199,6 @@ def date_to_unix(date_str):
         
         # Время всегда 00:00:00 (требование PosCenter для тега 1178)
         dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        
-        # Проверяем возраст чека (лимит 30 дней)
-        now = datetime.now()
-        days_diff = (now - dt).days
-        
-        if days_diff > 30:
-            # Используем вчерашнюю дату с временем 00:00:00
-            yesterday = now - timedelta(days=1)
-            yesterday = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
-            log(f"   Чек старше 30 дней ({days_diff} дней), используем вчерашнюю дату: {yesterday}")
-            return int(yesterday.timestamp())
         
         return int(dt.timestamp())
     except:
@@ -239,9 +225,6 @@ def date_to_datetime_format(date_str):
 def date_to_correction_format(date_str):
     """Конвертация строки даты в формат для тега 1178: ДД.ММ.ГГ 00:00:00
     
-    ВАЖНО: Касса имеет лимит на возраст корректируемого чека (около 30 дней).
-    Если оригинальный чек старше лимита, используем вчерашнюю дату.
-    
     Формат по требованию PosCenter: ДД.ММ.ГГ 00:00:00
     """
     if not date_str:
@@ -250,16 +233,6 @@ def date_to_correction_format(date_str):
         # Формат: 2026-01-01 00:06:00
         dt = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
         
-        # Проверяем возраст чека (лимит 30 дней)
-        now = datetime.now()
-        days_diff = (now - dt).days
-        
-        if days_diff > 30:
-            # Используем вчерашнюю дату
-            yesterday = now - timedelta(days=1)
-            log(f"   Чек старше 30 дней ({days_diff} дней), используем вчерашнюю дату: {yesterday.strftime('%d.%m.%y')}")
-            dt = yesterday
-        
         # Формат: ДД.ММ.ГГ 00:00:00
         return dt.strftime('%d.%m.%y 00:00:00')
     except:
@@ -267,27 +240,12 @@ def date_to_correction_format(date_str):
 
 
 def date_to_driver_format(date_str):
-    """Конвертация строки даты в формат драйвера ДД.ММ.ГГГГ
-    
-    ВАЖНО: Касса имеет лимит на возраст корректируемого чека (около 30 дней).
-    Если оригинальный чек старше лимита, используем вчерашнюю дату.
-    """
+    """Конвертация строки даты в формат драйвера ДД.ММ.ГГГГ"""
     if not date_str:
         return None
     try:
         # Формат: 2026-01-01 00:06:00
         dt = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
-        
-        # Проверяем возраст чека (лимит 30 дней)
-        now = datetime.now()
-        days_diff = (now - dt).days
-        
-        if days_diff > 30:
-            # Используем вчерашнюю дату
-            yesterday = now - timedelta(days=1)
-            yesterday = yesterday.replace(hour=12, minute=0, second=0, microsecond=0)
-            log(f"   Чек старше 30 дней ({days_diff} дней), используем вчерашнюю дату: {yesterday}")
-            dt = yesterday
         
         # Формат драйвера: ДД.ММ.ГГГГ
         return dt.strftime('%d.%m.%Y')
@@ -650,12 +608,13 @@ def correction_sale(kkt, summ, payment_type, items, vat_rate, fiscal_sign=None, 
                 
                 log(f"\n5. Добавление товара: {item['name']}")
                 log(f"   Количество: {item['quantity']} {item['unit']}")
+                log(f"   Цена: {item['price']} руб.")
                 log(f"   Сумма: {item['summ']} руб. (включает НДС)")
                 log(f"   НДС {vat_rate}%: {item_vat_value} руб.")
                 
                 kkt.CheckType = 1  # Приход для FNOperation
-                kkt.Price = item['summ']  # Цена = полная сумма с НДС
-                kkt.Quantity = 1  # Количество = 1
+                kkt.Price = item['price']  # Цена за единицу товара
+                kkt.Quantity = item['quantity']  # Количество из CSV
                 kkt.Summ1 = item['summ']  # Сумма с НДС (не меняется)
                 kkt.Summ1Enabled = True
                 kkt.Tax1 = 12  # НДС 22%
