@@ -34,7 +34,7 @@ LOG_FILE = 'correction_process.log'
 PROCESSED_FILE = 'processed.json'
 
 # Режим работы: 'test' - тестовый (1 чек), 'prod' - полный
-MODE = 'test'  # Изменить на 'prod' для реальной работы
+MODE = 'prod'  # Изменить на 'prod' для реальной работы
 
 # Настройки подключения к ККТ
 COM_PORT = 3
@@ -42,6 +42,21 @@ BAUD_RATE = 115200
 
 # НДС 22% (действует с 01.01.2026)
 VAT_RATE = 22
+
+# Признак предмета расчета (тег 1212)
+# 1 - товар
+# 2 - подакцизный товар (топливо, сигареты, алкоголь)
+SUBJECT_TYPE_GOOD = 1
+SUBJECT_TYPE_EXCISE = 2  # Подакцизный товар
+
+# Единицы измерения (MeasureUnit)
+MEASURE_UNIT_PIECE = 0    # Штуки (применяется для предметов расчета, которые могут быть реализованы поштучно)
+MEASURE_UNIT_LITER = 41   # Литр
+MEASURE_UNIT_GRAM = 10    # Грамм
+MEASURE_UNIT_KILOGRAM = 11  # Килограмм
+
+# Ключевые слова для определения подакцизных товаров (топливо)
+FUEL_KEYWORDS = ['АИ-92', 'АИ-95', 'АИ-98', 'АИ-80', 'ДТ-', 'ДТ ', 'дизель', 'бензин', 'К5', 'газомоторн']
 
 # FP чеков с НДС 10% для исключения
 VAT_10_FP = [
@@ -133,7 +148,10 @@ def load_items_data(items_file):
                         'quantity': quantity,
                         'unit': row['unit'],
                         'price': price,
-                        'summ': summ
+                        'summ': summ,
+                        'marking_code': row.get('marking_code', ''),
+                        'marking_type': int(row['marking_type']) if row.get('marking_type') else 0,
+                        'marking_type2': int(row['marking_type2']) if row.get('marking_type2') else 0
                     })
         log(f"Загружено товаров: {sum(len(v) for v in items.values())} для {len(items)} чеков")
         log(f"Загружено дат: {len(dates)}")
@@ -253,6 +271,67 @@ def date_to_driver_format(date_str):
         return None
 
 
+def is_fuel_item(item_name):
+    """
+    Проверяет, является ли товар топливом (подакцизным товаром)
+    
+    Возвращает True, если название содержит ключевые слова топлива.
+    """
+    if not item_name:
+        return False
+    
+    name_upper = item_name.upper()
+    
+    for keyword in FUEL_KEYWORDS:
+        if keyword.upper() in name_upper:
+            return True
+    
+    return False
+
+
+def get_subject_type(item_name):
+    """
+    Определяет признак предмета расчета (тег 1212) для товара
+    
+    Возвращает:
+    - 2 (подакцизный товар) для топлива
+    - 1 (товар) для остальных товаров
+    """
+    if is_fuel_item(item_name):
+        return SUBJECT_TYPE_EXCISE
+    return SUBJECT_TYPE_GOOD
+
+
+def get_measure_unit(item_name, item_unit=None):
+    """
+    Определяет единицу измерения (MeasureUnit) для товара
+    
+    Args:
+        item_name - название товара
+        item_unit - единица измерения из данных (л, шт, кг и т.д.)
+    
+    Возвращает:
+    - 41 (литр) для топлива
+    - 0 (штуки) для остальных товаров
+    """
+    # Для топлива всегда литры
+    if is_fuel_item(item_name):
+        return MEASURE_UNIT_LITER
+    
+    # Проверяем единицу измерения из данных
+    if item_unit:
+        unit_lower = item_unit.lower().strip()
+        if unit_lower in ['л', 'литр', 'литры', 'литров']:
+            return MEASURE_UNIT_LITER
+        elif unit_lower in ['кг', 'килограмм', 'килограммы']:
+            return MEASURE_UNIT_KILOGRAM
+        elif unit_lower in ['г', 'грамм', 'граммы']:
+            return MEASURE_UNIT_GRAM
+    
+    # По умолчанию - штуки
+    return MEASURE_UNIT_PIECE
+
+
 def send_tlv(kkt, tag, value):
     """
     Отправка TLV-тега через FNSendTLV
@@ -363,6 +442,74 @@ def send_tlv_string(kkt, tag, string_value):
     return send_tlv(kkt, tag, string_value)
 
 
+def send_item_code_data(kkt, code, marking_type):
+    """
+    Отправка кода товара через FNSendItemCodeData
+    
+    Args:
+        code - строка с кодом товара (например, EAN-13)
+        marking_type - тип маркировки (MarkingType)
+    """
+    try:
+        if not code:
+            log("   No item code to send")
+            return True
+            
+        log(f"   Sending item code data: code={code}, type={marking_type}")
+        
+        # Устанавливаем код товара
+        kkt.ItemCodeData = code
+        kkt.MarkingType = marking_type
+        
+        result = kkt.FNSendItemCodeData()
+        log(f"   FNSendItemCodeData: result={result}")
+        
+        if result != 0:
+            log(f"   FNSendItemCodeData error: {result}, ResultCode: {kkt.ResultCode}")
+            return False
+            
+        log("   FNSendItemCodeData OK")
+        return True
+    except Exception as e:
+        log(f"   FNSendItemCodeData exception: {e}")
+        return False
+
+
+def send_item_barcode(kkt, code, marking_type, marking_type2):
+    """
+    Отправка штрихкода товара через FNSendItemBarcode
+    
+    Args:
+        code - строка с кодом товара (например, EAN-13)
+        marking_type - тип маркировки (MarkingType)
+        marking_type2 - тип КМ (MarkingType2)
+    """
+    try:
+        if not code:
+            log("   No item barcode to send")
+            return True
+            
+        log(f"   Sending item barcode: code={code}, type={marking_type}, type2={marking_type2}")
+        
+        # Устанавливаем данные штрихкода
+        kkt.ItemBarcodeData = code
+        kkt.MarkingType = marking_type
+        kkt.MarkingType2 = marking_type2
+        
+        result = kkt.FNSendItemBarcode()
+        log(f"   FNSendItemBarcode: result={result}")
+        
+        if result != 0:
+            log(f"   FNSendItemBarcode error: {result}, ResultCode: {kkt.ResultCode}")
+            return False
+            
+        log("   FNSendItemBarcode OK")
+        return True
+    except Exception as e:
+        log(f"   FNSendItemBarcode exception: {e}")
+        return False
+
+
 def correction_refund(kkt, summ, payment_type, fiscal_sign, items, receipt_date=None):
     """
     Чек коррекции "Возврат прихода" (отмена ошибочного чека)
@@ -435,63 +582,77 @@ def correction_refund(kkt, summ, payment_type, fiscal_sign, items, receipt_date=
         if result != 0:
             log(f"   FNSendTag error: {result}, ResultCode: {kkt.ResultCode}")
         
-        # 5. Добавляем товары
+        # 6. Добавление товаров через FNOperation с признаком предмета расчета
         if items:
-            for item in items:
-                log(f"\n5. Добавление товара: {item['name']}")
-                log(f"   Количество: {item['quantity']} {item['unit']}")
-                log(f"   Цена: {item['price']} руб.")
-                log(f"   Сумма: {item['summ']} руб. (БЕЗ НДС)")
+            log(f"\n6. Добавление товаров ({len(items)} шт.)...")
+            for idx, item in enumerate(items, 1):
+                subject_type = get_subject_type(item['name'])
+                subject_name = "подакцизный товар" if subject_type == SUBJECT_TYPE_EXCISE else "товар"
+                measure_unit = get_measure_unit(item['name'], item.get('unit'))
+                measure_name = "литр" if measure_unit == MEASURE_UNIT_LITER else "штука"
                 
-                kkt.CheckType = 2  # Возврат прихода для FNOperation
-                kkt.Price = item['price']
-                kkt.Quantity = item['quantity']
-                kkt.Summ1 = item['summ']
-                kkt.Summ1Enabled = True
-                kkt.Tax1 = 0  # Без НДС (как в оригинале)
-                kkt.StringForPrinting = item['name'][:128]
-                kkt.PaymentTypeSign = 4  # Полный расчёт
-                kkt.PaymentItemSign = 1  # Товар
+                # Формируем наименование с калькуляцией: "АИ-95-К5 (45 л * 66.70)"
+                item_name_with_calc = f"{item['name']} ({item['quantity']} {item['unit']} * {item['price']})"
+                
+                log(f"   Товар {idx}: {item_name_with_calc}")
+                log(f"      Количество: 1 {item['unit']}")
+                log(f"      Цена: {item['summ']} руб. (сумма)")
+                log(f"      Признак предмета расчета: {subject_type} ({subject_name})")
+                log(f"      Единица измерения: {measure_unit} ({measure_name})")
+                
+                # Установка параметров товара
+                kkt.StringForPrinting = item_name_with_calc  # Название товара с калькуляцией
+                kkt.Price = item['summ']  # Цена = сумма товара
+                kkt.Quantity = 1  # Количество всегда 1
+                kkt.Department = 0
+                
+                # Единица измерения (MeasureUnit)
+                kkt.MeasureUnit = measure_unit
+                
+                # НДС: БЕЗ НДС (как в оригинальном чеке)
+                kkt.Tax1 = 0  # Без НДС
+                kkt.TaxValueEnabled = False
+                
+                # Признак предмета расчета (тег 1212)
+                # Для топлива - 2 (подакцизный товар), для остальных - 1 (товар)
+                kkt.PaymentItemSign = subject_type
                 
                 result = kkt.FNOperation()
-                log(f"   FNOperation: {result}, ResultCode: {kkt.ResultCode}")
+                log(f"      FNOperation: result={result}")
                 
                 if result != 0:
-                    log(f"   Error: {kkt.ResultCodeDescription}")
-                    kkt.CancelCheck()
-                    return False
+                    log(f"      FNOperation error: {result}, ResultCode: {kkt.ResultCode}")
+                    log(f"      Error: {kkt.ResultCodeDescription}")
+                else:
+                    # Отправка кода маркировки
+                    if item.get('marking_code'):
+                        log(f"      Отправка кода маркировки: {item['marking_code']}")
+                        send_item_code_data(kkt, item['marking_code'], item['marking_type'])
+                        send_item_barcode(kkt, item['marking_code'], item['marking_type'], item['marking_type2'])
         else:
-            # Если товаров нет, добавляем одну позицию
-            log(f"\n5. Добавление позиции (без товара)...")
-            kkt.CheckType = 2
-            kkt.Price = summ
-            kkt.Quantity = 1
-            kkt.Summ1 = summ
-            kkt.Summ1Enabled = True
-            kkt.Tax1 = 0  # Без НДС
-            kkt.StringForPrinting = "Коррекция (отмена прихода)"
-            kkt.PaymentTypeSign = 4
-            kkt.PaymentItemSign = 1
-            
-            result = kkt.FNOperation()
-            log(f"   FNOperation: {result}, ResultCode: {kkt.ResultCode}")
-            
-            if result != 0:
-                log(f"   Error: {kkt.ResultCodeDescription}")
-                kkt.CancelCheck()
-                return False
+            log(f"\n6. Товары не добавлены (список пуст)")
         
-        # 6. FNCloseCheckEx
-        log("\n6. FNCloseCheckEx...")
-        kkt.Summ1 = summ
-        log(f"   Summ1 (итог) = {summ}")
+        # 7. FNCloseCheckEx - закрытие чека коррекции
+        log("\n7. FNCloseCheckEx...")
+        log(f"   Сумма чека: {summ} руб.")
         
+        # ВАЖНО: Сначала сбрасываем все суммы в 0
+        kkt.Summ1 = 0  # Наличные
+        kkt.Summ2 = 0  # Безналичные (электронные)
+        kkt.Summ3 = 0  # Предоплата
+        kkt.Summ4 = 0  # Постоплата (встречное предоставление)
+        log(f"   Summ1..Summ4 сброшены в 0")
+        
+        # Устанавливаем нужный тип оплаты
+        # По документации ККТ Штрих-М:
+        # Summ1 - наличные
+        # Summ2 - безналичные (электронные)
         if payment_type == 1:
-            kkt.Summ2 = summ
-            log(f"   Summ2 (наличные) = {summ}")
+            kkt.Summ1 = summ
+            log(f"   Summ1 (наличные) = {summ}")
         else:
-            kkt.Summ3 = summ
-            log(f"   Summ3 (электронные) = {summ}")
+            kkt.Summ2 = summ
+            log(f"   Summ2 (безналичные) = {summ}")
         
         result = kkt.FNCloseCheckEx()
         log(f"   FNCloseCheckEx: {result}, ResultCode: {kkt.ResultCode}")
@@ -599,72 +760,95 @@ def correction_sale(kkt, summ, payment_type, items, vat_rate, fiscal_sign=None, 
             if result != 0:
                 log(f"   FNSendTag error: {result}, ResultCode: {kkt.ResultCode}")
         
-        # 5. Добавляем товары
+        # 6. Добавление товаров через FNOperation с НДС 22% и признаком предмета расчета
         if items:
-            for item in items:
-                # Расчет НДС для товара (выделение из суммы)
-                item_vat_value = item['summ'] * vat_rate / (100 + vat_rate)
-                item_vat_value = round(item_vat_value, 2)
+            log(f"\n6. Добавление товаров ({len(items)} шт.) с НДС {vat_rate}%...")
+            
+            items_total = 0.0
+            
+            for idx, item in enumerate(items, 1):
+                subject_type = get_subject_type(item['name'])
+                subject_name = "подакцизный товар" if subject_type == SUBJECT_TYPE_EXCISE else "товар"
+                measure_unit = get_measure_unit(item['name'], item.get('unit'))
+                measure_name = "литр" if measure_unit == MEASURE_UNIT_LITER else "штука"
                 
-                log(f"\n5. Добавление товара: {item['name']}")
-                log(f"   Количество: {item['quantity']} {item['unit']}")
-                log(f"   Цена: {item['price']} руб.")
-                log(f"   Сумма: {item['summ']} руб. (включает НДС)")
-                log(f"   НДС {vat_rate}%: {item_vat_value} руб.")
+                # Расчет НДС для товара
+                item_vat = item['summ'] * vat_rate / (100 + vat_rate)
+                item_vat = round(item_vat, 2)
                 
-                kkt.CheckType = 1  # Приход для FNOperation
-                kkt.Price = item['price']  # Цена за единицу товара
-                kkt.Quantity = item['quantity']  # Количество из CSV
-                kkt.Summ1 = item['summ']  # Сумма с НДС (не меняется)
-                kkt.Summ1Enabled = True
+                # Формируем наименование с калькуляцией: "АИ-95-К5 (45 л * 66.70)"
+                item_name_with_calc = f"{item['name']} ({item['quantity']} {item['unit']} * {item['price']})"
+                
+                log(f"   Товар {idx}: {item_name_with_calc}")
+                log(f"      Количество: 1 {item['unit']}")
+                log(f"      Цена: {item['summ']} руб. (сумма)")
+                log(f"      НДС {vat_rate}%: {item_vat} руб.")
+                log(f"      Признак предмета расчета: {subject_type} ({subject_name})")
+                log(f"      Единица измерения: {measure_unit} ({measure_name})")
+                
+                # Установка параметров товара
+                kkt.StringForPrinting = item_name_with_calc  # Название товара с калькуляцией
+                kkt.Price = item['summ']  # Цена = сумма товара
+                kkt.Quantity = 1  # Количество всегда 1
+                kkt.Department = 0
+                
+                # Единица измерения (MeasureUnit)
+                kkt.MeasureUnit = measure_unit
+                
+                # НДС 22%
                 kkt.Tax1 = 12  # НДС 22%
-                kkt.TaxValue = item_vat_value
+                kkt.TaxValue = item_vat
                 kkt.TaxValueEnabled = True
-                kkt.StringForPrinting = item['name'][:128]
-                kkt.PaymentTypeSign = 4  # Полный расчёт
-                kkt.PaymentItemSign = 1  # Товар
+                
+                # Признак предмета расчета (тег 1212)
+                # Для топлива - 2 (подакцизный товар), для остальных - 1 (товар)
+                kkt.PaymentItemSign = subject_type
                 
                 result = kkt.FNOperation()
-                log(f"   FNOperation: {result}, ResultCode: {kkt.ResultCode}")
+                log(f"      FNOperation: result={result}")
                 
                 if result != 0:
-                    log(f"   Error: {kkt.ResultCodeDescription}")
-                    kkt.CancelCheck()
-                    return False
+                    log(f"      FNOperation error: {result}, ResultCode: {kkt.ResultCode}")
+                    log(f"      Error: {kkt.ResultCodeDescription}")
+                else:
+                    # Отправка кода маркировки
+                    if item.get('marking_code'):
+                        log(f"      Отправка кода маркировки: {item['marking_code']}")
+                        send_item_code_data(kkt, item['marking_code'], item['marking_type'])
+                        send_item_barcode(kkt, item['marking_code'], item['marking_type'], item['marking_type2'])
+                    items_total += item['summ']
+            
+            log(f"   Итого товаров: {items_total} руб.")
         else:
-            # Если товаров нет, добавляем одну позицию
-            log(f"\n5. Добавление позиции (без товара)...")
-            kkt.CheckType = 1
-            kkt.Price = summ
-            kkt.Quantity = 1
-            kkt.Summ1 = summ
-            kkt.Summ1Enabled = True
+            log(f"\n6. Товары не добавлены (список пуст)")
+            # Установка НДС 22% для чека коррекции без товаров
+            log(f"\n   Установка НДС {vat_rate}%...")
             kkt.Tax1 = 12  # НДС 22%
             kkt.TaxValue = vat
             kkt.TaxValueEnabled = True
-            kkt.StringForPrinting = "Коррекция (приход с НДС)"
-            kkt.PaymentTypeSign = 4
-            kkt.PaymentItemSign = 1
-            
-            result = kkt.FNOperation()
-            log(f"   FNOperation: {result}, ResultCode: {kkt.ResultCode}")
-            
-            if result != 0:
-                log(f"   Error: {kkt.ResultCodeDescription}")
-                kkt.CancelCheck()
-                return False
+            log(f"   Tax1 = 12 (НДС 22%), TaxValue = {vat}")
         
-        # 6. FNCloseCheckEx
-        log("\n6. FNCloseCheckEx...")
-        kkt.Summ1 = summ
-        log(f"   Summ1 (итог) = {summ}")
+        # 7. FNCloseCheckEx - закрытие чека коррекции
+        log("\n7. FNCloseCheckEx...")
+        log(f"   Сумма чека: {summ} руб.")
         
+        # ВАЖНО: Сначала сбрасываем все суммы в 0
+        kkt.Summ1 = 0  # Наличные
+        kkt.Summ2 = 0  # Безналичные (электронные)
+        kkt.Summ3 = 0  # Предоплата
+        kkt.Summ4 = 0  # Постоплата (встречное предоставление)
+        log(f"   Summ1..Summ4 сброшены в 0")
+        
+        # Устанавливаем нужный тип оплаты
+        # По документации ККТ Штрих-М:
+        # Summ1 - наличные
+        # Summ2 - безналичные (электронные)
         if payment_type == 1:
-            kkt.Summ2 = summ
-            log(f"   Summ2 (наличные) = {summ}")
+            kkt.Summ1 = summ
+            log(f"   Summ1 (наличные) = {summ}")
         else:
-            kkt.Summ3 = summ
-            log(f"   Summ3 (электронные) = {summ}")
+            kkt.Summ2 = summ
+            log(f"   Summ2 (безналичные) = {summ}")
         
         result = kkt.FNCloseCheckEx()
         log(f"   FNCloseCheckEx: {result}, ResultCode: {kkt.ResultCode}")
@@ -732,7 +916,7 @@ def process_corrections(data, items_data, dates_data, mode='test'):
             if items:
                 log(f"  Товаров в чеке: {len(items)}")
                 for item in items:
-                    log(f"    - {item['name']}: {item['quantity']} {item['unit']} x {item['price']} = {item['summ']}")
+                    log(f"    - {item['name']} ({item['quantity']} {item['unit']} * {item['price']}) = {item['summ']}")
             else:
                 log(f"  ВНИМАНИЕ: Товары не найдены для чека {check['fiscal_sign']}")
             
